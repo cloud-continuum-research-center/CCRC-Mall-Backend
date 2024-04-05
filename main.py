@@ -63,9 +63,9 @@ async def create_item(
         video_path = None
 
         if image:
-            image_path = crud.upload_file_to_s3(image)
+            image_path = crud.upload_image_to_s3(image)
         if video:
-            video_path = crud.upload_file_to_s3(video)
+            video_path = crud.upload_video_to_s3(video)
 
         # 데이터베이스에 아이템 생성 및 이미지 및 동영상 경로 저장
         db_item = crud.create_item(
