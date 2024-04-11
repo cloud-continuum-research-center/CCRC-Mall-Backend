@@ -9,6 +9,7 @@ from io import BytesIO
 
 import boto3
 from botocore.exceptions import ClientError
+from urllib.parse import urlparse
 
 # ID로 사용자 찾기
 def get_user_by_email(db: Session, email: str):
@@ -135,18 +136,27 @@ async def save_upload_file(file: UploadFile, folder: str):
     return file_path
 
 s3_client = boto3.client(
-    service_name='s3', region_name='us-east-1',
+    service_name='', region_name='',
     aws_access_key_id='', aws_secret_access_key=""
 )
-bucket_name = ""
+bucket_name = "3d-modeling-mall"
 
 # GPU 서버 API 호출
-def send_image_url_to_another_server(video_path: str, server_url: str):
+def send_video(db: Session, item_id: int):
     try:
+        db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
         server_url = 'http://163.180.117.36:20000'
-        data = {"video_path": video_path}
+
+        parsed_url = urlparse(db_item.video)
+        path_components = parsed_url.path.split('/')
+        file_name = path_components[-1]
+        file_name_without_extension = file_name.split('.')[0]
+        desired_part = file_name_without_extension
+
+        data = {"video_filename": desired_part}
         response = requests.post(server_url, json=data)
         response.raise_for_status()
+        return desired_part
     except requests.RequestException as e:
         print(f"An error occurred while sending image URL to another server: {e}")
         raise HTTPException(status_code=500, detail="Failed to send image URL to GPU server")

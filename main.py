@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from fastapi import File, UploadFile
 from fastapi.responses import FileResponse
 from fastapi import Form
+from urllib.parse import urlparse
 
 import crud, models, schemas
 from database import SessionLocal, engine
@@ -225,6 +226,19 @@ async def get_item_multi_paths(item_id: int, db: Session = Depends(get_db)):
         "splat_path": db_item.splat
     }
 
+@api_router.get("/items/{item_id}/image/")
+async def get_item_multi_paths(item_id: int, db: Session = Depends(get_db)):
+    # 데이터베이스에서 item_id에 해당하는 상품을 가져옵니다.
+    db_item = crud.get_item(db, item_id=item_id)
+    
+    # 상품이 없을 경우 404 오류를 반환합니다.
+    if not db_item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    # 상품의 이미지, 동영상, .splat 파일의 경로를 반환합니다.
+    return db_item.image
+
+
 @api_router.put("/items/{item_id}/splat")
 def update_item_splat(
     item_id: int,
@@ -237,6 +251,14 @@ def update_item_splat(
         return {"item": db_item}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# GPU 서버 API 호출
+@app.post("/send/{item_id}")
+def send_video(item_id: int, db: Session = Depends(get_db)):
+    try:
+        return crud.send_video(db, item_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send video: {str(e)}")
 
 
 app.include_router(api_router)
