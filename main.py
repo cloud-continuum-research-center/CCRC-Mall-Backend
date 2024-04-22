@@ -1,20 +1,33 @@
 from typing import List
 
-from fastapi import Depends, FastAPI, HTTPException, APIRouter
+from fastapi import Depends, FastAPI, HTTPException, APIRouter, BackgroundTasks
 from sqlalchemy.orm import Session
 from fastapi import File, UploadFile
-from fastapi.responses import FileResponse
 from fastapi import Form
-from urllib.parse import urlparse
+from websocket import websocket_endpoint
+from typing import Dict
+import asyncio
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+import requests
 
-import crud, models, schemas
+import crud, models, schemas, websocket
 from database import SessionLocal, engine
+import time
 
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
 UPLOAD_DIR = "./photo"
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
 
 def get_db():
     db = SessionLocal()
@@ -24,6 +37,8 @@ def get_db():
         db.close()
 
 api_router = APIRouter(prefix="/api")
+
+app.websocket("/ws")(websocket_endpoint)
 
 # 회원가입
 @api_router.post("/join/", response_model=schemas.UserSchema)
@@ -50,6 +65,7 @@ def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
 # 상품 등록
 @api_router.post("/items/")
 async def create_item(
+    background_tasks: BackgroundTasks,
     name: str = Form(...),
     description: str = Form(...),
     price: float = Form(...),
@@ -64,9 +80,9 @@ async def create_item(
         video_path = None
 
         if image:
-            image_path = crud.upload_image_to_s3(image)
+            image_path = crud.upload_file_to_s3(image)
         if video:
-            video_path = crud.upload_video_to_s3(video)
+            video_path = crud.upload_file_to_s3(video)
 
         # 데이터베이스에 아이템 생성 및 이미지 및 동영상 경로 저장
         db_item = crud.create_item(
@@ -77,17 +93,16 @@ async def create_item(
                 price=price,
                 category_id=category_id,
                 image_path=image_path,
-                video_path=video_path  # 이 부분이 추가됐습니다.
+                video_path=video_path
             ),
             image_path,
             video_path
         )
-
+        #crud.send_video(db, db_item.id)
+        background_tasks.add_task(crud.send_video, db, db_item.id)
         return {"item": db_item}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-   
 
 # 모든 상품 목록 조회
 @api_router.get("/items/", response_model=List[schemas.ItemResponseModel])
@@ -212,14 +227,11 @@ async def create_upload_file(file: UploadFile = File(...)):
 
 @api_router.get("/items/{item_id}/multi/")
 async def get_item_multi_paths(item_id: int, db: Session = Depends(get_db)):
-    # 데이터베이스에서 item_id에 해당하는 상품을 가져옵니다.
     db_item = crud.get_item(db, item_id=item_id)
     
-    # 상품이 없을 경우 404 오류를 반환합니다.
     if not db_item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    # 상품의 이미지, 동영상, .splat 파일의 경로를 반환합니다.
     return {
         "image_path": db_item.image,
         "video_path": db_item.video,
@@ -228,37 +240,26 @@ async def get_item_multi_paths(item_id: int, db: Session = Depends(get_db)):
 
 @api_router.get("/items/{item_id}/image/")
 async def get_item_multi_paths(item_id: int, db: Session = Depends(get_db)):
-    # 데이터베이스에서 item_id에 해당하는 상품을 가져옵니다.
     db_item = crud.get_item(db, item_id=item_id)
     
-    # 상품이 없을 경우 404 오류를 반환합니다.
     if not db_item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    # 상품의 이미지, 동영상, .splat 파일의 경로를 반환합니다.
     return db_item.image
 
-
-@api_router.put("/items/{item_id}/splat")
-def update_item_splat(
-    item_id: int,
-    splat_file: UploadFile = File(...),
-    db: Session = Depends(get_db)
-):
+# GPU 서버에서 이미지 받아오기
+@api_router.put("/receive")
+def receive_splat(item_id: int, splat_uuid: str, db: Session = Depends(get_db)):
     try:
-        # 상품의 .splat 파일을 업데이트합니다.
-        db_item = crud.update_item_splat(db, item_id, splat_file)
-        return {"item": db_item}
+        return crud.receive_splat(db, item_id, splat_uuid)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# GPU 서버 API 호출
-@app.post("/send/{item_id}")
-def send_video(item_id: int, db: Session = Depends(get_db)):
-    try:
-        return crud.send_video(db, item_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send video: {str(e)}")
+@api_router.delete("/category")
+def delete_other_category_items(db: Session = Depends(get_db)):
+    crud.delete_items_in_other_category(db)
 
+    return True
 
 app.include_router(api_router)
+

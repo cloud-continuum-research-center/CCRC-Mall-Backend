@@ -4,12 +4,11 @@ from sqlalchemy.orm import Session
 import models, schemas
 import uuid
 import requests
-import zipfile
-from io import BytesIO
 
 import boto3
-from botocore.exceptions import ClientError
 from urllib.parse import urlparse
+
+import json
 
 # ID로 사용자 찾기
 def get_user_by_email(db: Session, email: str):
@@ -136,33 +135,34 @@ async def save_upload_file(file: UploadFile, folder: str):
     return file_path
 
 s3_client = boto3.client(
-    service_name='', region_name='',
+    service_name='s3', region_name='',
     aws_access_key_id='', aws_secret_access_key=""
 )
-bucket_name = "3d-modeling-mall"
-
+bucket_name = ""
 # GPU 서버 API 호출
 def send_video(db: Session, item_id: int):
     try:
         db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
-        server_url = 'http://163.180.117.36:20000'
+        server_url = 'http://163.180.117.43:9003/api/downloadvideo'
 
         parsed_url = urlparse(db_item.video)
         path_components = parsed_url.path.split('/')
         file_name = path_components[-1]
         file_name_without_extension = file_name.split('.')[0]
-        desired_part = file_name_without_extension
+        video_uuid = file_name_without_extension
 
-        data = {"video_filename": desired_part}
+        data = {"item_id": item_id, "video_uuid": video_uuid}
         response = requests.post(server_url, json=data)
         response.raise_for_status()
-        return desired_part
+        return video_uuid
     except requests.RequestException as e:
         print(f"An error occurred while sending image URL to another server: {e}")
         raise HTTPException(status_code=500, detail="Failed to send image URL to GPU server")
+    
+    
 
 # S3 파일 업로드
-def upload_image_to_s3(file: UploadFile) -> str:
+def upload_file_to_s3(file: UploadFile) -> str:
     try:
         unique_filename = str(uuid.uuid4())
         file_extension = file.filename.split(".")[-1]
@@ -171,32 +171,11 @@ def upload_image_to_s3(file: UploadFile) -> str:
         response = s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=file_body)
 
         s3_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_key}"
-        return s3_url
+        return s3_url   
 
     except Exception as e:
         print(f"An error occurred while uploading file to S3: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to upload file to S3")
-
-def upload_video_to_s3(video_file: UploadFile) -> str:
-    try:
-        unique_filename = str(uuid.uuid4())
-        s3_key = f"{unique_filename}.zip"
-
-        # 비디오 파일을 메모리에 압축
-        with BytesIO() as zip_buffer:
-            with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as z:
-                z.writestr(video_file.filename, video_file.file.read())
-
-            # 압축된 파일을 Amazon S3에 업로드
-            zip_buffer.seek(0)
-            s3_client.upload_fileobj(zip_buffer, bucket_name, s3_key)
-
-        s3_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_key}"
-        return s3_url
-
-    except Exception as e:
-        print(f"An error occurred while uploading video to S3: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to upload video to S3")
 
 def upload_splat_to_s3(db: Session, item_id: int, splat_file: UploadFile):
     db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
@@ -204,9 +183,31 @@ def upload_splat_to_s3(db: Session, item_id: int, splat_file: UploadFile):
     if not db_item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    splat_path = upload_image_to_s3(splat_file)
+    splat_path = upload_file_to_s3(splat_file)
 
     db_item.splat = splat_path
     db.commit()
-
     return db_item
+
+
+def receive_splat(db: Session, item_id: int, splat_uuid: str):
+    try:
+        response = "https://3d-modeling-mall.s3.ap-northeast-2.amazonaws.com/"+splat_uuid+".ply"
+    except Exception as e:
+        print(f"Error getting URL from S3: {e}")
+        return None
+
+    # 데이터베이스에서 아이템 가져오기
+    db_item = db.query(models.Item).filter(models.Item.id == item_id).first()
+    
+    if db_item:
+        # 아이템에 URL 업데이트하고 커밋
+        db_item.splat = response
+        print(db_item.splat)
+        db.commit()
+        db.refresh(db_item)
+        return db_item
+
+def delete_items_in_other_category(db: Session):
+    db.query(models.Item).filter(models.Item.category.has(models.Category.name == "기타")).delete(synchronize_session=False)
+    db.commit()
